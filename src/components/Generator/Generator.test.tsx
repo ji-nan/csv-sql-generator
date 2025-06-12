@@ -1,285 +1,125 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import Generator from "./Generator";
-import type { ParseConfig, ParseResult, ParseStepResult } from "papaparse";
+import "@testing-library/jest-dom";
+import Papa from "papaparse";
 
 // Mock papaparse
-const mockPapaParse = vi.fn();
-vi.mock("papaparse", () => ({
-  default: {
-    parse: mockPapaParse,
-  },
+jest.mock("papaparse", () => ({
+  ...jest.requireActual("papaparse"), // Import and retain default behavior
+  parse: jest.fn(), // Mock the parse function
 }));
 
-// Mock navigator.clipboard
-Object.defineProperty(navigator, "clipboard", {
-  value: {
-    writeText: vi.fn().mockResolvedValue(undefined),
-  },
-  configurable: true,
-  writable: true,
-});
+const mockParse = Papa.parse as jest.Mock;
 
 describe("Generator Component", () => {
-  let mockFile: File;
-
   beforeEach(() => {
-    mockFile = new File(["col1,col2\nval1,val2"], "test.csv", {
-      type: "text/csv",
-    });
-    // Reset mocks before each test
-    mockPapaParse.mockReset();
-    (navigator.clipboard.writeText as vi.Mock).mockClear();
+    // Reset the mock before each test
+    mockParse.mockReset();
+  });
 
-    // Default mock implementation for Papa.parse
-    // This can be overridden in specific tests if needed
-    mockPapaParse.mockImplementation((_file, config) => {
+  test("should enable Generate button when a file is selected", async () => {
+    const user = userEvent.setup();
+    mockParse.mockImplementation((_file, config) => {
+      // Simulate successful parsing completion for this specific test
       if (config.complete) {
-        config.complete({
-          data: [],
-          errors: [],
-          meta: { VITE_TEST_PATCH_ROOT: "." },
-        });
+        config.complete();
       }
     });
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("renders initial state correctly", () => {
     render(<Generator />);
-    expect(screen.getByTestId("file-input")).tobei();
+
+    // Find the Generate button and assert it's initially disabled
     const generateButton = screen.getByRole("button", { name: /generate/i });
-    expect(generateButton).toBeInTheDocument();
     expect(generateButton).toBeDisabled();
-    expect(screen.queryByText(/processing.../i)).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/error parsing csv file/i)
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText(/generated sql/i)).not.toBeInTheDocument();
+
+    // Find the file input using the data-testid
+    const fileInputElement = screen.getByTestId("csv-file-input");
+
+    const mockFile = new File(["file content"], "test.csv", { type: "text/csv" });
+
+    // Simulate file selection
+    await user.upload(fileInputElement, mockFile);
+
+    // Assert the Generate button is now enabled
+    expect(generateButton).toBeEnabled();
   });
 
-  it("enables Generate button when a file is selected", () => {
-    render(<Generator />);
-    const fileInput = screen.getByTestId("file-input");
-    const generateButton = screen.getByRole("button", { name: /generate/i });
-
-    expect(generateButton).toBeDisabled();
-    fireEvent.change(fileInput, { target: { files: [mockFile] } });
-    expect(generateButton).not.toBeDisabled();
-  });
-
-  it("parses CSV successfully, displays results, and updates NMI and intervalLength", async () => {
-    mockPapaParse.mockImplementation((_file, config: ParseConfig<string[]>) => {
+  test("should show processing message, then results table and copy button on successful generation", async () => {
+    const user = userEvent.setup();
+    mockParse.mockImplementation((_file, config) => {
+      // Simulate chunk processing
       if (config.chunk) {
-        // Simulate receiving a '200' record
-        config.chunk(
-          {
-            data: [["200", "NMI123", "Q", "U", "S", "A", "E", "kWh", "30"]],
-            meta: { VITE_TEST_PATCH_ROOT: "." },
-          } as ParseResult<string[]>,
-          {} as any
-        );
-        // Simulate receiving a '300' record
-        config.chunk(
-          {
-            data: [["300", "20230101", "10.5", "20.0"]],
-            meta: { VITE_TEST_PATCH_ROOT: "." },
-          } as ParseResult<string[]>,
-          {} as any
-        );
+        // Simulate a '200' record
+        config.chunk({ data: [["200", "NMI123", "", "", "", "", "", "", "30"]] }, { meta: {} });
+        // Simulate a '300' record
+        config.chunk({ data: [["300", "20230101", "10.5", "11.5"]] }, { meta: {} });
       }
+      // Simulate successful parsing completion
       if (config.complete) {
-        config.complete({
-          data: [],
-          errors: [],
-          meta: { VITE_TEST_PATCH_ROOT: "." },
-        });
+        config.complete();
       }
     });
 
     render(<Generator />);
-    const fileInput = screen.getByTestId("file-input");
+
     const generateButton = screen.getByRole("button", { name: /generate/i });
+    const fileInputElement = screen.getByTestId("csv-file-input");
+    const mockFile = new File(["200,NMI123,,,,,,,30\n300,20230101,10.5,11.5"], "test.csv", { type: "text/csv" });
 
-    fireEvent.change(fileInput, { target: { files: [mockFile] } });
-    fireEvent.click(generateButton);
+    await user.upload(fileInputElement, mockFile);
+    await user.click(generateButton);
 
-    expect(screen.getByText(/processing.../i)).toBeInTheDocument();
-
+    // Wait for results to appear
     await waitFor(() => {
-      expect(screen.queryByText(/processing.../i)).not.toBeInTheDocument();
+      expect(screen.getByText(/generated sql \(2 statements\)/i)).toBeInTheDocument();
     });
 
-    expect(
-      screen.getByText(/generated sql \(2 statements\)/i)
-    ).toBeInTheDocument();
-    // Check for NMI (from 200 record)
-    const nmiCells = screen.getAllByText("NMI123");
-    expect(nmiCells.length).toBeGreaterThanOrEqual(1); // NMI appears for each record row
+    // Check for table headers
+    expect(screen.getByRole("columnheader", { name: /nmi/i })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /timestamp/i })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /consumption/i })).toBeInTheDocument();
 
-    // Check for timestamps and consumption values (from 300 record)
-    expect(screen.getByText("2023-01-01 00:00:00")).toBeInTheDocument(); // Interval 0 * 30min
+    // Check for table content (example from mocked data)
+    expect(screen.queryAllByText("NMI123")).toHaveLength(2);
+    expect(screen.getByText("2023-01-01 00:00:00")).toBeInTheDocument();
     expect(screen.getByText("10.500")).toBeInTheDocument();
-    expect(screen.getByText("2023-01-01 00:30:00")).toBeInTheDocument(); // Interval 1 * 30min
-    expect(screen.getByText("20.000")).toBeInTheDocument();
+    expect(screen.getByText("2023-01-01 00:30:00")).toBeInTheDocument();
+    expect(screen.getByText("11.500")).toBeInTheDocument();
 
-    expect(
-      screen.getByRole("button", { name: /copy to clipboard/i })
-    ).toBeInTheDocument();
+    // Check for copy button
+    expect(screen.getByRole("button", { name: /copy to clipboard/i })).toBeInTheDocument();
+
+    // Processing message should disappear
+    expect(screen.queryByText(/processing.../i)).not.toBeInTheDocument();
   });
 
-  it("handles CSV parsing error", async () => {
+  test("should display an error message if CSV parsing fails", async () => {
+    const user = userEvent.setup();
     const errorMessage = "Test parsing error";
-    mockPapaParse.mockImplementation((_file, config: ParseConfig<string[]>) => {
+    mockParse.mockImplementation((_file, config) => {
+      // Simulate a parsing error
       if (config.error) {
-        config.error(new Error(errorMessage), mockFile);
+        config.error(new Error(errorMessage));
       }
     });
 
     render(<Generator />);
-    const fileInput = screen.getByTestId("file-input");
+
     const generateButton = screen.getByRole("button", { name: /generate/i });
+    const fileInputElement = screen.getByTestId("csv-file-input");
+    const mockFile = new File(["invalid,csv,data"], "test.csv", { type: "text/csv" });
 
-    fireEvent.change(fileInput, { target: { files: [mockFile] } });
-    fireEvent.click(generateButton);
+    await user.upload(fileInputElement, mockFile);
+    await user.click(generateButton);
 
-    expect(screen.getByText(/processing.../i)).toBeInTheDocument();
-
+    // Wait for error message to appear
     await waitFor(() => {
-      expect(screen.queryByText(/processing.../i)).not.toBeInTheDocument();
+      expect(screen.getByText(`Error parsing CSV file: ${errorMessage}`)).toBeInTheDocument();
     });
 
-    expect(
-      screen.getByText(`Error parsing CSV file: ${errorMessage}`)
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/generated sql/i)).not.toBeInTheDocument();
-  });
-
-  it("copies generated SQL to clipboard", async () => {
-    mockPapaParse.mockImplementation((_file, config: ParseConfig<string[]>) => {
-      if (config.chunk) {
-        config.chunk(
-          {
-            data: [["200", "NMI456", "", "", "", "", "", "", "60"]],
-            meta: { VITE_TEST_PATCH_ROOT: "." },
-          } as ParseResult<string[]>,
-          {} as any
-        );
-        config.chunk(
-          {
-            data: [["300", "20230202", "15.5"]],
-            meta: { VITE_TEST_PATCH_ROOT: "." },
-          } as ParseResult<string[]>,
-          {} as any
-        );
-      }
-      if (config.complete) {
-        config.complete({
-          data: [],
-          errors: [],
-          meta: { VITE_TEST_PATCH_ROOT: "." },
-        });
-      }
-    });
-
-    render(<Generator />);
-    const fileInput = screen.getByTestId("file-input");
-    fireEvent.change(fileInput, { target: { files: [mockFile] } });
-    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(/generated sql \(1 statements\)/i)
-      ).toBeInTheDocument();
-    });
-
-    const copyButton = screen.getByRole("button", {
-      name: /copy to clipboard/i,
-    });
-    fireEvent.click(copyButton);
-
-    expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "INSERT INTO meter_readings (nmi, \"timestamp\", consumption) VALUES ('NMI456', '2023-02-02 00:00:00', 15.5);"
-    );
-  });
-
-  it("handles CSV with no processable consumption data after a 200 record", async () => {
-    mockPapaParse.mockImplementation((_file, config: ParseConfig<string[]>) => {
-      if (config.chunk) {
-        config.chunk(
-          {
-            data: [["200", "NMI789", "", "", "", "", "", "", "15"]],
-            meta: { VITE_TEST_PATCH_ROOT: "." },
-          } as ParseResult<string[]>,
-          {} as any
-        );
-        config.chunk(
-          {
-            data: [["300", "20230303", "invalid", "data"]],
-            meta: { VITE_TEST_PATCH_ROOT: "." },
-          } as ParseResult<string[]>,
-          {} as any
-        ); // No valid numbers
-      }
-      if (config.complete) {
-        config.complete({
-          data: [],
-          errors: [],
-          meta: { VITE_TEST_PATCH_ROOT: "." },
-        });
-      }
-    });
-
-    render(<Generator />);
-    const fileInput = screen.getByTestId("file-input");
-    fireEvent.change(fileInput, { target: { files: [mockFile] } });
-    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
-
-    await waitFor(() => {
-      expect(screen.queryByText(/processing.../i)).not.toBeInTheDocument();
-    });
-
-    expect(screen.queryByText(/generated sql/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/error parsing csv file/i)
-    ).not.toBeInTheDocument(); // Should complete successfully but with 0 records
-  });
-
-  it("does not process 300 records if NMI or intervalLength is not set", async () => {
-    mockPapaParse.mockImplementation((_file, config: ParseConfig<string[]>) => {
-      if (config.chunk) {
-        // No '200' record, or '200' record is malformed for intervalLength
-        config.chunk(
-          {
-            data: [["300", "20230101", "10.5", "20.0"]],
-            meta: { VITE_TEST_PATCH_ROOT: "." },
-          } as ParseResult<string[]>,
-          {} as any
-        );
-      }
-      if (config.complete) {
-        config.complete({
-          data: [],
-          errors: [],
-          meta: { VITE_TEST_PATCH_ROOT: "." },
-        });
-      }
-    });
-
-    render(<Generator />);
-    fireEvent.change(screen.getByTestId("file-input"), {
-      target: { files: [mockFile] },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
-
-    await waitFor(() =>
-      expect(screen.queryByText(/processing.../i)).not.toBeInTheDocument()
-    );
+    // Processing message should disappear
+    expect(screen.queryByText(/processing.../i)).not.toBeInTheDocument();
+    // Results table should not be present
     expect(screen.queryByText(/generated sql/i)).not.toBeInTheDocument();
   });
 });

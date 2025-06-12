@@ -1,5 +1,6 @@
 "use client";
-import Papa, { ParseResult } from "papaparse";
+
+import Papa from "papaparse";
 import { ChangeEvent, useState } from "react";
 import "./styles.css";
 
@@ -36,7 +37,7 @@ export default function Generator() {
     Papa.parse(file, {
       worker: true, // Use a web worker to avoid blocking the UI.
       chunkSize: 1,
-      chunk: function (results: ParseResult<string[]>) {
+      chunk: function (results: Papa.ParseResult<string[]>) {
         // The chunk of data from the CSV.
         const chunkRows = results.data;
 
@@ -112,6 +113,7 @@ export default function Generator() {
       <div className="mt-8 w-full max-w-md justify-self-center">
         <div className="flex items-center bg-white p-6 rounded-lg shadow-md border border-gray-200">
           <input
+            data-testid="csv-file-input"
             type="file"
             accept=".csv"
             onChange={(event: ChangeEvent<HTMLInputElement>) =>

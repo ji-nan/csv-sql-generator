@@ -3,17 +3,13 @@
   "compilerOptions": {
     "outDir": "../../dist/out-tsc",
     "types": [
-      "vitest/globals",
-      "vitest/importMeta",
-      "vite/client",
       "node",
-      "vitest",
+      "jest",
       "@testing-library/jest-dom"
     ]
   },
   "include": [
-    "vite.config.ts",
-    "vitest.config.ts",
+    "jest.config.ts",
     "**/*.spec.ts",
     "**/*.test.ts",
     "**/*.spec.tsx",
